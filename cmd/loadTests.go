@@ -52,28 +52,37 @@ var (
 	FailedUserCreations                []int64
 	FailedResourceCreations            []int64
 	FailedPipelineRuns                 []int64
+	errorOccurredMap                   map[int]ErrorOccurrence
+	errorMutex                         = &sync.Mutex{}
 	threadsWG                          sync.WaitGroup
 )
 
+type ErrorOccurrence struct {
+	ErrorNumber   int    `json:"errorNumber"`
+	LatestMessage string `json:"latestMessage"`
+	Count         int    `json:"count"`
+}
+
 type LogData struct {
-	Timestamp                         string  `json:"timestamp"`
-	EndTimestamp                      string  `json:"endTimestamp"`
-	MachineName                       string  `json:"machineName"`
-	BinaryDetails                     string  `json:"binaryDetails"`
-	NumberOfThreads                   int     `json:"threads"`
-	NumberOfUsersPerThread            int     `json:"usersPerThread"`
-	BatchSize                         int     `json:"threadBatchSize"`
-	NumberOfUsers                     int     `json:"totalUsers"`
-	LoadTestCompletionStatus          string  `json:"status"`
-	AverageTimeToSpinUpUsers          float64 `json:"createUserTimeAvg"`
-	AverageTimeToCreateResources      float64 `json:"createResourcesTimeAvg"`
-	AverageTimeToRunPipelines         float64 `json:"runPipelineTimeAvg"`
-	UserCreationFailureCount          int64   `json:"createUserFailures"`
-	UserCreationFailurePercentage     float64 `json:"createUserFailureRate"`
-	ResourceCreationFailureCount      int64   `json:"createResourcesFailures"`
-	ResourceCreationFailurePercentage float64 `json:"createResourcesFailureRate"`
-	PipelineRunFailureCount           int64   `json:"runPipelineFailures"`
-	PipelineRunFailurePercentage      float64 `json:"runPipelineFailureRate"`
+	Timestamp                         string            `json:"timestamp"`
+	EndTimestamp                      string            `json:"endTimestamp"`
+	MachineName                       string            `json:"machineName"`
+	BinaryDetails                     string            `json:"binaryDetails"`
+	NumberOfThreads                   int               `json:"threads"`
+	NumberOfUsersPerThread            int               `json:"usersPerThread"`
+	BatchSize                         int               `json:"threadBatchSize"`
+	NumberOfUsers                     int               `json:"totalUsers"`
+	LoadTestCompletionStatus          string            `json:"status"`
+	AverageTimeToSpinUpUsers          float64           `json:"createUserTimeAvg"`
+	AverageTimeToCreateResources      float64           `json:"createResourcesTimeAvg"`
+	AverageTimeToRunPipelines         float64           `json:"runPipelineTimeAvg"`
+	UserCreationFailureCount          int64             `json:"createUserFailures"`
+	UserCreationFailurePercentage     float64           `json:"createUserFailureRate"`
+	ResourceCreationFailureCount      int64             `json:"createResourcesFailures"`
+	ResourceCreationFailurePercentage float64           `json:"createResourcesFailureRate"`
+	PipelineRunFailureCount           int64             `json:"runPipelineFailures"`
+	PipelineRunFailurePercentage      float64           `json:"runPipelineFailureRate"`
+	ErrorsOccurred                    []ErrorOccurrence `json:"errors"`
 }
 
 func createLogDataJSON(outputFile string, logDataInput LogData) error {
@@ -137,6 +146,21 @@ func logError(errCode int, message string) {
 		klog.Fatalln(msg)
 	} else {
 		klog.Errorln(msg)
+	}
+	errorMutex.Lock()
+	defer errorMutex.Unlock()
+	errorOccurrence, ok := errorOccurredMap[errCode]
+	if ok {
+		errorOccurrence.Count += 1
+		errorOccurrence.LatestMessage = message
+		errorOccurredMap[errCode] = errorOccurrence
+	} else {
+		errorOccurrence := ErrorOccurrence{
+			ErrorNumber:   errCode,
+			LatestMessage: message,
+			Count:         1,
+		}
+		errorOccurredMap[errCode] = errorOccurrence
 	}
 }
 
@@ -251,6 +275,7 @@ func setup(cmd *cobra.Command, args []string) {
 	FailedUserCreations = make([]int64, threadCount)
 	FailedResourceCreations = make([]int64, threadCount)
 	FailedPipelineRuns = make([]int64, threadCount)
+	errorOccurredMap = make(map[int]ErrorOccurrence)
 
 	threadsWG.Add(threadCount)
 	for thread := 0; thread < threadCount; thread++ {
@@ -281,6 +306,9 @@ func setup(cmd *cobra.Command, args []string) {
 	klog.Infof("Number of times user creation failed: %d (%.2f %%)", userCreationFailureCount, userCreationFailurePercentage)
 	klog.Infof("Number of times resource creation failed: %d (%.2f %%)", resourceCreationFailureCount, resourceCreationFailurePercentage)
 	klog.Infof("Number of times pipeline run failed: %d (%.2f %%)", pipelineRunFailureCount, PipelineRunFailurePercentage)
+	for errorCode, errorOccurrence := range errorOccurredMap {
+		klog.Infof("Number of error #%d occured: %d", errorCode, errorOccurrence.Count)
+	}
 
 	klog.StopFlushDaemon()
 	klog.Flush()
@@ -305,6 +333,11 @@ func setup(cmd *cobra.Command, args []string) {
 	goArch := runtime.GOARCH
 	binaryDetails := fmt.Sprintf("Built with %s for %s/%s", goVersion, goOS, goArch)
 
+	var errorOccurredList []ErrorOccurrence
+	for _, errorOccurrance := range errorOccurredMap {
+		errorOccurredList = append(errorOccurredList, errorOccurrance)
+	}
+
 	logDataInput := LogData{
 		Timestamp:                         loadTestsTimestamp,
 		EndTimestamp:                      loadTestsEndTimestamp,
@@ -324,6 +357,7 @@ func setup(cmd *cobra.Command, args []string) {
 		ResourceCreationFailurePercentage: resourceCreationFailurePercentage,
 		PipelineRunFailureCount:           pipelineRunFailureCount,
 		PipelineRunFailurePercentage:      PipelineRunFailurePercentage,
+		ErrorsOccurred:                    errorOccurredList,
 	}
 
 	err = createLogDataJSON("load-tests.json", logDataInput)
@@ -464,7 +498,7 @@ func userJourneyThread(framework *framework.Framework, threadIndex int, usersBar
 				ComponentName := fmt.Sprintf("%s-component", username)
 				ApplicationName := fmt.Sprintf("%s-app", username)
 				DefaultRetryInterval := time.Millisecond * 200
-				DefaultTimeout := time.Minute * 17
+				DefaultTimeout := time.Minute * 60
 				error := k8swait.Poll(DefaultRetryInterval, DefaultTimeout, func() (done bool, err error) {
 					pipelineRun, err := framework.AsKubeAdmin.HasController.GetComponentPipelineRun(ComponentName, ApplicationName, usernamespace, "")
 					if err != nil {
