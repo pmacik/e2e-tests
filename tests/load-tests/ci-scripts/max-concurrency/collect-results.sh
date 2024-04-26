@@ -15,13 +15,16 @@ csv_delim=";"
 csv_delim_quoted="\"$csv_delim\""
 dt_format='"%Y-%m-%dT%H:%M:%SZ"'
 
+artifact_logs="${ARTIFACT_DIR}/logs"
+artifact_pprof="${ARTIFACT_DIR}/pprof"
+
 collect_artifacts() {
     echo "Collecting load test artifacts.."
-    mkdir -p "${ARTIFACT_DIR}/logs"
-    find "$output_dir" -type f -name 'load-tests.max-concurrency.*.log' -exec cp -vf {} "${ARTIFACT_DIR}/logs" \;
-    find "$output_dir" -type f -name 'load-tests.max-concurrency.json' -exec cp -vf {} "${ARTIFACT_DIR}" \;
-    mkdir -p "${ARTIFACT_DIR}/pprof"
-    find "$output_dir" -type f -name '*.pprof' -exec cp -vf {} "${ARTIFACT_DIR}/pprof" \;
+    mkdir -p "$artifact_logs"
+    find "$output_dir" -type f -name 'load-tests.max-concurrency.*.log' -exec cp -vf {} "$artifact_logs" \;
+    find "$output_dir" -type f -name 'load-tests.max-concurrency.json' -exec cp -vf {} "$artifact_logs" \;
+    mkdir -p "$artifact_pprof"
+    find "$output_dir" -type f -name '*.pprof' -exec cp -vf {} "$artifact_pprof" \;
 }
 
 collect_monitoring_data() {
@@ -87,8 +90,8 @@ collect_tekton_profiling_data() {
         for pprof_profile in $(find "$output_dir" -name "*.pprof"); do
             if [ -s "$pprof_profile" ]; then
                 file=$(basename "$pprof_profile")
-                go tool pprof -text "$pprof_profile" >"$ARTIFACT_DIR/pprof/$file.txt" || true
-                go tool pprof -svg -output="$ARTIFACT_DIR/pprof/$file.svg" "$pprof_profile" || true
+                go tool pprof -text "$pprof_profile" >"$artifact_pprof/$file.txt" || true
+                go tool pprof -svg -output="$artifact_pprof/$file.svg" "$pprof_profile" || true
             fi
         done
     fi
@@ -112,6 +115,7 @@ collect_scalability_data() {
 ${csv_delim}Threads\
 ${csv_delim}WorkloadKPI\
 ${csv_delim}Errors\
+${csv_delim}Duration\
 ${csv_delim}UserAvgTime\
 ${csv_delim}UserMaxTime\
 ${csv_delim}ApplicationAvgTime\
@@ -136,6 +140,15 @@ ${csv_delim}ClusterPVCInUseAvg\
 ${csv_delim}TektonResultsWatcherMemoryMin\
 ${csv_delim}TektonResultsWatcherMemoryMax\
 ${csv_delim}TektonResultsWatcherMemoryRange\
+${csv_delim}TektonResultsWatcherCPUMin\
+${csv_delim}TektonResultsWatcherCPUMax\
+${csv_delim}TektonResultsWatcherCPURange\
+${csv_delim}TektonResultsWatcherWorkqueueDepthMin\
+${csv_delim}TektonResultsWatcherWorkqueueDepthMax\
+${csv_delim}TektonResultsWatcherWorkqueueDepthRange\
+${csv_delim}TektonResultsWatcherReconcileLatencyBucketMin\
+${csv_delim}TektonResultsWatcherReconcileLatencyBucketMax\
+${csv_delim}TektonResultsWatcherReconcileLatencyBucketRange\
 ${tekton_results_watcher_pod_headers}\
 ${csv_delim}SchedulerPendingPodsCountAvg\
 ${csv_delim}TokenPoolRatePrimaryAvg\
@@ -171,6 +184,7 @@ ${csv_delim}NodeDiskIoTimeSecondsTotalAvg" \
                 + $csv_delim_quoted + (.threads | tostring) \
                 + $csv_delim_quoted + (.workloadKPI | tostring) \
                 + $csv_delim_quoted + (.errorsTotal | tostring) \
+                + $csv_delim_quoted + ((.endTimestamp | strptime(\"%Y-%m-%dT%H:%M:%S%z\") | mktime) - (.timestamp | strptime(\"%Y-%m-%dT%H:%M:%S%z\") | mktime) | tostring) \
                 + $csv_delim_quoted + (.createUserTimeAvg | tostring) \
                 + $csv_delim_quoted + (.createUserTimeMax | tostring) \
                 + $csv_delim_quoted + (.createApplicationsTimeAvg | tostring) \
@@ -195,6 +209,15 @@ ${csv_delim}NodeDiskIoTimeSecondsTotalAvg" \
                 + $csv_delim_quoted + (.measurements.\"tekton-results-watcher\".\"container[watcher]\".memory.min | tostring) \
                 + $csv_delim_quoted + (.measurements.\"tekton-results-watcher\".\"container[watcher]\".memory.max | tostring) \
                 + $csv_delim_quoted + (.measurements.\"tekton-results-watcher\".\"container[watcher]\".memory.range | tostring) \
+                + $csv_delim_quoted + (.measurements.\"tekton-results-watcher\".cpu.min | tostring) \
+                + $csv_delim_quoted + (.measurements.\"tekton-results-watcher\".cpu.max | tostring) \
+                + $csv_delim_quoted + (.measurements.\"tekton-results-watcher\".cpu.range | tostring) \
+                + $csv_delim_quoted + (.measurements.\"tekton-results-watcher\".watcher_workqueue_depth.min | tostring) \
+                + $csv_delim_quoted + (.measurements.\"tekton-results-watcher\".watcher_workqueue_depth.max | tostring) \
+                + $csv_delim_quoted + (.measurements.\"tekton-results-watcher\".watcher_workqueue_depth.range | tostring) \
+                + $csv_delim_quoted + (.measurements.\"tekton-results-watcher\".watcher_reconcile_latency_bucket.min | tostring) \
+                + $csv_delim_quoted + (.measurements.\"tekton-results-watcher\".watcher_reconcile_latency_bucket.max | tostring) \
+                + $csv_delim_quoted + (.measurements.\"tekton-results-watcher\".watcher_reconcile_latency_bucket.range | tostring) \
                 ${parked_go_routines_columns} \
                 + $csv_delim_quoted + (.measurements.scheduler_pending_pods_count.mean | tostring) \
                 + $csv_delim_quoted + (.measurements.token_pool_rate_primary.mean | tostring) \
@@ -249,10 +272,19 @@ collect_timestamp_csvs() {
     oc get pipelineruns.tekton.dev -A -o json | jq "$jq_cmd" | sed -e "s/\n//g" -e "s/^\"//g" -e "s/\"$//g" -e "s/Z;/;/g" | sort -t ";" -k 13 -r -n >>"$pipelinerun_timestamps"
 }
 
+collect_tekton_results_logs() {
+    echo "Collecting Tekton results logs..."
+    mkdir -p "$artifact_logs"
+    oc logs -c api -n tekton-results -l "app.kubernetes.io/name=tekton-results-api" --prefix --tail=-1 >"$artifact_logs/tekton-results-api.log"
+    oc logs -c watcher -n tekton-results -l "app.kubernetes.io/name=tekton-results-watcher" --prefix --tail=-1 >"$artifact_logs/tekton-results-watcher.log"
+    oc logs -c minio -n tekton-results "pod/storage-pool-0-0" --prefix --tail=-1 >"$artifact_logs/tekton-result-storage.log"
+}
+
 echo "Collecting max concurrency results..."
 collect_artifacts || true
+#collect_tekton_results_logs || true
 collect_timestamp_csvs || true
-collect_monitoring_data || true
+#collect_monitoring_data || true
 collect_scalability_data || true
-collect_tekton_profiling_data || true
+#collect_tekton_profiling_data || true
 popd

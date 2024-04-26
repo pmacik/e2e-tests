@@ -16,6 +16,13 @@ load_test() {
     iteration=$(printf "%04d" "${2:-1}")
     index=$(printf "%04d" "$threads")
     iteration_index="${iteration}-${index}"
+    echo
+    echo "=== RHTAP load test ==="
+    echo "Threads: $threads"
+    echo "Iteration: $iteration"
+    echo "Index: $index"
+    echo "Iteration index: $iteration_index"
+    echo
     ## Enable CPU profiling in Tekton
     if [ "${TEKTON_PERF_ENABLE_CPU_PROFILING:-}" == "true" ]; then
         echo "Starting CPU profiling with pprof"
@@ -141,7 +148,7 @@ max_concurrency() {
         maxThreads=${MAX_THREADS:-10}
         threshold=${THRESHOLD:-300}
         echo '{"startTimestamp":"'"$(date +%FT%T%:z)"'", "maxThreads": '"$maxThreads"', "maxConcurrencySteps": "'"${maxConcurrencySteps[*]}"'", "threshold": '"$threshold"', "maxConcurrencyReached": 0, "computedConcurrency": 0, "workloadKPI": 0, "endTimestamp": "", "errorsTotal": -1}' | jq >"$output"
-        iteration=0
+        iteration=${ITERATION_OFFSET:-0}
         for t in "${maxConcurrencySteps[@]}"; do
             iteration="$((iteration + 1))"
             if (("$t" > "$maxThreads")); then
